@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>英文跟讀練習</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  h1 { margin: 0; }
+  .controls { display: flex; gap: .5rem; margin-left: auto; }
+  textarea { width: 100%; font-size: 1.5rem; padding: .5rem; box-sizing: border-box; margin-top: 1rem; }
+  select { font-size: 1rem; padding: .4rem; max-width: 14rem; }
+  #play { font-size: 2rem; padding: 1rem 2rem; width: 100%; margin-top: 1rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>英文跟讀練習</h1>
+  <div class="controls">
+    <select id="rate" title="播放速度">
+      <option value="0.3">0.3x</option>
+      <option value="0.5">0.5x</option>
+      <option value="0.7">0.7x</option>
+      <option value="1" selected>1.0x</option>
+      <option value="1.2">1.2x</option>
+      <option value="1.5">1.5x</option>
+    </select>
+    <select id="voice" title="聲音"></select>
+  </div>
+</header>
+
+<textarea id="text" rows="3">The quick brown fox jumps over the lazy dog.</textarea>
+
+<button id="play">▶ 播放</button>
+
+<script>
+const synth = speechSynthesis;
+const rateSel = document.getElementById('rate');
+const voiceSel = document.getElementById('voice');
+
+// getVoices() 在部分瀏覽器第一次呼叫是空的, 要等 voiceschanged
+function loadVoices() {
+  const voices = synth.getVoices()
+    .filter(v => v.lang.startsWith('en'))
+    // 名字含 Natural / Google 的是雲端神經網路語音, 排前面
+    .sort((a, b) => score(b) - score(a));
+  if (!voices.length) return;
+  voiceSel.innerHTML = voices
+    .map(v => `<option value="${v.name}">${v.name} (${v.lang})</option>`)
+    .join('');
+  voiceSel.value = localStorage.getItem('voice') || '';
+  if (!voiceSel.value) voiceSel.value = voices[0].name; // 存的音色這台機器沒有
+}
+const score = v => (/natural|google/i.test(v.name) ? 2 : 0) + (v.lang === 'en-US' ? 1 : 0);
+
+rateSel.value = localStorage.getItem('rate') || '1';
+rateSel.onchange = () => localStorage.setItem('rate', rateSel.value);
+voiceSel.onchange = () => localStorage.setItem('voice', voiceSel.value);
+
+loadVoices();
+synth.onvoiceschanged = loadVoices;
+
+document.getElementById('play').onclick = () => {
+  synth.cancel(); // 避免連點時排隊
+  const u = new SpeechSynthesisUtterance(document.getElementById('text').value);
+  u.voice = synth.getVoices().find(v => v.name === voiceSel.value) || null;
+  u.rate = +rateSel.value || 1;
+  synth.speak(u);
+};
+</script>
+</body>
+</html>
