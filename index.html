@@ -21,6 +21,8 @@
   #list .text { flex: 1; font-size: 1.1rem; }
   #list button { font-size: 1rem; padding: .3rem .6rem; cursor: pointer; }
   #list .empty { color: #888; justify-content: center; border-bottom: 0; }
+  /* outline 不佔空間, 用 border 會讓正在唸的那行把下面整份清單推開 */
+  #list li.speaking { outline: 2px solid #06c; outline-offset: -2px; background: #f0f7ff; }
 </style>
 </head>
 <body>
@@ -47,7 +49,7 @@
 
 <div class="bar">
   <button id="playAll">▶ 播放全部</button>
-  <button id="clear">清空</button>
+  <button id="del">移除選取</button>
 </div>
 
 <ul id="list"></ul>
@@ -60,14 +62,11 @@ const addSentence = (list, text) => [
   ...text.split(/\r?\n/).map(s => s.trim()).filter(Boolean),
 ];
 
-const removeAt = (list, at) => list.filter((_, i) => i !== at);
+// 一次移除勾選的那幾句; 刪完勾選一律歸零, 所以不必重算剩下的索引
+const removeSelected = (list, sel) => list.filter((_, i) => !sel.includes(i));
 
 const toggleSelection = (sel, i) =>
   sel.includes(i) ? sel.filter(n => n !== i) : [...sel, i];
-
-// 刪除後選取要繼續指向原本那幾句: 被刪的丟掉, 排在它後面的往前搬一格
-const remapSelection = (sel, at) =>
-  sel.filter(i => i !== at).map(i => (i > at ? i - 1 : i));
 
 // 索引的意義依附於清單長度, 兩邊一旦不同步就會指到不存在的項目
 const parseSelection = (raw, len) => {
@@ -120,19 +119,16 @@ function selfTest() {
   eq(parseList('{oops'), [], '還原: 損毀字串退回空清單');
   eq(parseList('"a"'), [], '還原: 型別不對退回空清單');
 
-  eq(removeAt(['a', 'b', 'c'], 1), ['a', 'c'], '刪除: 只移除該項, 其餘順序不變');
-  eq(removeAt(['a', 'b', 'c'], 0), ['b', 'c'], '刪除: 第一項');
-  eq(removeAt(['a', 'b', 'c'], 2), ['a', 'b'], '刪除: 最後一項');
+  eq(removeSelected(['a', 'b', 'c'], [1]), ['a', 'c'], '移除: 只移除勾選的, 其餘順序不變');
+  eq(removeSelected(['a', 'b', 'c'], [0, 2]), ['b'], '移除: 一次移除多句');
+  eq(removeSelected(['a', 'b', 'c'], [2, 0]), ['b'], '移除: 與勾選先後無關');
+  eq(removeSelected(['a', 'b', 'c'], []), ['a', 'b', 'c'], '移除: 沒勾選就不動清單');
+  eq(removeSelected(['a', 'b'], [0, 1]), [], '移除: 全部勾選就清空');
 
   eq(nextInQueue([0, 1, 2], 0, 5, 5), 1, '續播: 序號沒變就往下一個');
   eq(nextInQueue([0, 1, 2], 1, 5, 5), 2, '續播: 中間往下一個');
   eq(nextInQueue([0, 1, 2], 2, 5, 5), null, '續播: 佇列走完就停');
   eq(nextInQueue([0, 1, 2], 0, 5, 6), null, '續播: 中止後帶著舊序號的結束事件不得續播');
-
-  eq(remapSelection([0, 2], 1), [0, 1], '重映射: 大於被刪索引的往前搬一格');
-  eq(remapSelection([0, 2], 2), [0], '重映射: 被刪的那一個自己消失');
-  eq(remapSelection([1, 2], 0), [0, 1], '重映射: 全部往前搬');
-  eq(remapSelection([0, 1], 2), [0, 1], '重映射: 刪在後面不影響前面');
 
   eq(toggleSelection([0], 2), [0, 2], '切換: 勾選');
   eq(toggleSelection([0, 2], 0), [2], '切換: 取消勾選');
@@ -160,7 +156,7 @@ const voiceSel = document.getElementById('voice');
 const listEl = document.getElementById('list');
 const form = document.getElementById('add');
 const input = document.getElementById('text');
-const clearBtn = document.getElementById('clear');
+const delBtn = document.getElementById('del');
 const playAllBtn = document.getElementById('playAll');
 
 const KEY_LIST = 'sentences';
@@ -169,7 +165,7 @@ const KEY_SEL = 'selected';
 let list = parseList(localStorage.getItem(KEY_LIST));
 let sel = parseSelection(localStorage.getItem(KEY_SEL), list.length);
 let token = 0;      // 每次中止或開始依序播放就 +1, 用來認出過期的結束事件
-let playing = false;
+let speakingAt = null; // 正在唸的句子索引, null 代表沒有聲音在跑
 
 // getVoices() 在部分瀏覽器第一次呼叫是空的, 要等 voiceschanged
 function loadVoices() {
@@ -197,23 +193,33 @@ const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&g
 
 function render() {
   listEl.innerHTML = list.length
-    ? list.map((s, i) => `<li>
+    ? list.map((s, i) => `<li${i === speakingAt ? ' class="speaking"' : ''}>
         <input type="checkbox" data-toggle="${i}" aria-label="選取這一句"${sel.includes(i) ? ' checked' : ''}>
         <span class="text">${esc(s)}</span>
-        <button data-play="${i}" title="播放這一句">▶</button>
-        <button data-del="${i}" title="刪除這一句">✕</button>
+        <button data-play="${i}" title="播放這一句">${i === speakingAt ? '■' : '▶'}</button>
       </li>`).join('')
-    : '<li class="empty">還沒有句子, 在上面輸入後按 Enter 新增</li>';
-  clearBtn.disabled = !list.length;
-  syncPlayAll();
+    : '<li class="empty">還沒有句子, 在上面輸入後按 Ctrl+Enter 新增</li>';
+  syncBar();
 }
 
-// 勾選會活過重新整理, 所以播放範圍必須寫在按鈕上, 不能是隱形狀態
-function syncPlayAll() {
+// 播放中只切樣式不重繪: 重建 DOM 會殺掉 checkbox 焦點, 每唸一句整份清單也會閃一下
+function highlight() {
+  listEl.querySelectorAll('li').forEach((li, i) => {
+    li.classList.toggle('speaking', i === speakingAt);
+    const btn = li.querySelector('[data-play]'); // 空清單那一行沒有按鈕
+    if (btn) btn.textContent = i === speakingAt ? '■' : '▶';
+  });
+  syncBar();
+}
+
+// 勾選會活過重新整理, 所以兩顆按鈕的作用範圍必須寫在自己身上, 不能是隱形狀態
+function syncBar() {
   playAllBtn.disabled = !list.length;
-  playAllBtn.textContent = playing ? '■ 停止'
+  playAllBtn.textContent = speakingAt !== null ? '■ 停止'
     : sel.length ? `▶ 播放選取的 ${sel.length} 句`
     : '▶ 播放全部';
+  delBtn.disabled = !sel.length; // 移除只吃勾選, 沒勾就沒有可移除的目標
+  delBtn.textContent = sel.length ? `移除選取的 ${sel.length} 句` : '移除選取';
 }
 
 function speak(text, onend) {
@@ -227,56 +233,52 @@ function speak(text, onend) {
 // 中止: 換一個新序號讓還在路上的結束事件失效, 再取消目前的朗讀
 function stop() {
   token++;
-  playing = false;
+  speakingAt = null;
   synth.cancel();
 }
 
 playAllBtn.onclick = () => {
-  if (playing) { stop(); render(); return; } // 播放中再按一次就是停止
+  if (speakingAt !== null) { stop(); highlight(); return; } // 有聲音在跑, 這顆就是停止
   const queue = playQueue(list, sel); // 按下的當下就固定, 播放中改勾選不影響這一輪
   if (!queue.length) return;
   stop();
   const round = token;
-  playing = true;
-  const step = pos => speak(list[queue[pos]], () => {
-    const next = nextInQueue(queue, pos, round, token);
-    if (next === null) {
-      if (round === token) { playing = false; render(); } // 自然唸完
-      return;
-    }
-    step(next);
-  });
+  const step = pos => {
+    speakingAt = queue[pos];
+    highlight();
+    speak(list[queue[pos]], () => {
+      const next = nextInQueue(queue, pos, round, token);
+      if (next === null) {
+        if (round === token) { speakingAt = null; highlight(); } // 自然唸完
+        return;
+      }
+      step(next);
+    });
+  };
   step(0);
-  render();
 };
 
 // 事件委派: render 每次重建整份清單, 逐項綁事件等於每次重繪都要重綁
 listEl.onclick = e => {
-  const btn = e.target.closest('button');
+  const btn = e.target.closest('[data-play]');
   if (!btn) return;
-  if (btn.dataset.play !== undefined) {
-    const at = +btn.dataset.play; // 先取索引, render 之後這個節點就沒了
-    stop();                       // 避免連點時排隊, 也中止正在進行的依序播放
-    render();
-    speak(list[at]);
-  }
-  if (btn.dataset.del !== undefined) del(+btn.dataset.del);
+  const at = +btn.dataset.play;
+  if (at === speakingAt) { stop(); highlight(); return; } // 正在唸這句, 再按一次就停
+  stop();                 // 避免連點時排隊, 也中止正在進行的依序播放
+  const round = token;    // 被中斷的結束事件不該把新的那句取消標示
+  speakingAt = at;
+  speak(list[at], () => {
+    if (round === token) { speakingAt = null; highlight(); }
+  });
+  highlight();
 };
 
-function del(at) {
+delBtn.onclick = () => {
   // 取消就什麼都不做, 包含不中斷正在進行的朗讀
-  if (!confirm(`刪除這一句?\n\n${list[at]}`)) return;
+  if (!confirm(`移除勾選的 ${sel.length} 句?`)) return;
   stop(); // 清單一變動就停止播放, 免得唸到已經不存在的句子
-  list = removeAt(list, at);
-  sel = remapSelection(sel, at); // 少了這行, 勾選會悄悄移到別句上
-  commit();
-}
-
-clearBtn.onclick = () => {
-  if (!confirm(`清空全部 ${list.length} 句?`)) return;
-  stop();
-  list = [];
-  sel = [];
+  list = removeSelected(list, sel);
+  sel = []; // 勾選的都不在了, 剩下的索引也全部位移, 一律歸零最單純
   commit();
 };
 
@@ -296,7 +298,7 @@ listEl.onchange = e => {
   if (e.target.dataset.toggle === undefined) return;
   sel = toggleSelection(sel, +e.target.dataset.toggle);
   save();
-  syncPlayAll();
+  syncBar();
 };
 
 // textarea 的 Enter 本來就是換行不會送出; Ctrl/Cmd+Enter 才新增
