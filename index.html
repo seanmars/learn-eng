@@ -10,8 +10,8 @@
   h1 { margin: 0; }
   .controls { display: flex; gap: .5rem; margin-left: auto; }
   select { font-size: 1rem; padding: .4rem; max-width: 14rem; }
-  #add { display: flex; gap: .5rem; margin-top: 1rem; }
-  #add input { flex: 1; font-size: 1.25rem; padding: .5rem; }
+  #add { display: flex; gap: .5rem; margin-top: 1rem; align-items: flex-start; }
+  #add textarea { flex: 1; font-size: 1.25rem; padding: .5rem; font-family: inherit; resize: vertical; }
   #add button { font-size: 1rem; padding: .5rem 1rem; white-space: nowrap; }
   .bar { display: flex; gap: .5rem; margin-top: 1rem; }
   .bar button { font-size: 1rem; padding: .5rem 1rem; cursor: pointer; }
@@ -41,7 +41,7 @@
 </header>
 
 <form id="add">
-  <input id="text" autocomplete="off" placeholder="輸入英文句子, 按 Enter 新增">
+  <textarea id="text" rows="3" autocomplete="off" placeholder="輸入英文句子, 換行分成多句&#10;Ctrl+Enter 新增"></textarea>
   <button>新增</button>
 </form>
 
@@ -54,10 +54,11 @@
 
 <!-- 純邏輯: 不碰 DOM, 不碰 localStorage. 開 index.html?selftest 會執行自我檢查 -->
 <script id="pure">
-const addSentence = (list, text) => {
-  const s = text.trim();
-  return s ? [...list, s] : list;
-};
+// 一行一句: 貼上整段文章可以一次拆成多筆, 空行直接丟掉
+const addSentence = (list, text) => [
+  ...list,
+  ...text.split(/\r?\n/).map(s => s.trim()).filter(Boolean),
+];
 
 const removeAt = (list, at) => list.filter((_, i) => i !== at);
 
@@ -109,6 +110,10 @@ function selfTest() {
   eq(addSentence(['a'], 'b'), ['a', 'b'], '新增: 附加到最後');
   eq(addSentence(['a'], '   '), ['a'], '新增: 只有空白就不新增');
   eq(addSentence(['a'], 'a'), ['a', 'a'], '新增: 重複的句子也是獨立一項');
+  eq(addSentence([], 'a\nb'), ['a', 'b'], '新增: 換行拆成多筆');
+  eq(addSentence([], 'a\r\nb'), ['a', 'b'], '新增: 貼上的 CRLF 也算換行');
+  eq(addSentence([], ' a \n\n  \n b '), ['a', 'b'], '新增: 空白行不算一筆');
+  eq(addSentence(['x'], '\n\n'), ['x'], '新增: 全是換行就不動清單');
 
   eq(parseList('["a","b"]'), ['a', 'b'], '還原: 正常 JSON 陣列維持原順序');
   eq(parseList(null), [], '還原: 沒有保存過就是空清單');
@@ -292,6 +297,14 @@ listEl.onchange = e => {
   sel = toggleSelection(sel, +e.target.dataset.toggle);
   save();
   syncPlayAll();
+};
+
+// textarea 的 Enter 本來就是換行不會送出; Ctrl/Cmd+Enter 才新增
+// 要 preventDefault, 否則送出後那個 Enter 會再插一個換行進已清空的欄位
+input.onkeydown = e => {
+  if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  form.requestSubmit();
 };
 
 form.onsubmit = e => {
