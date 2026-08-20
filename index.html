@@ -9,9 +9,18 @@
   header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
   h1 { margin: 0; }
   .controls { display: flex; gap: .5rem; margin-left: auto; }
-  textarea { width: 100%; font-size: 1.5rem; padding: .5rem; box-sizing: border-box; margin-top: 1rem; }
   select { font-size: 1rem; padding: .4rem; max-width: 14rem; }
-  #play { font-size: 2rem; padding: 1rem 2rem; width: 100%; margin-top: 1rem; }
+  #add { display: flex; gap: .5rem; margin-top: 1rem; }
+  #add input { flex: 1; font-size: 1.25rem; padding: .5rem; }
+  #add button { font-size: 1rem; padding: .5rem 1rem; white-space: nowrap; }
+  .bar { display: flex; gap: .5rem; margin-top: 1rem; }
+  .bar button { font-size: 1rem; padding: .5rem 1rem; cursor: pointer; }
+  .bar button:disabled { cursor: default; opacity: .5; }
+  #list { list-style: none; padding: 0; margin-top: 1rem; }
+  #list li { display: flex; align-items: center; gap: .5rem; padding: .5rem; border-bottom: 1px solid #ddd; }
+  #list .text { flex: 1; font-size: 1.1rem; }
+  #list button { font-size: 1rem; padding: .3rem .6rem; cursor: pointer; }
+  #list .empty { color: #888; justify-content: center; border-bottom: 0; }
 </style>
 </head>
 <body>
@@ -31,14 +40,131 @@
   </div>
 </header>
 
-<textarea id="text" rows="3">The quick brown fox jumps over the lazy dog.</textarea>
+<form id="add">
+  <input id="text" autocomplete="off" placeholder="輸入英文句子, 按 Enter 新增">
+  <button>新增</button>
+</form>
 
-<button id="play">▶ 播放</button>
+<div class="bar">
+  <button id="playAll">▶ 播放全部</button>
+  <button id="clear">清空</button>
+</div>
+
+<ul id="list"></ul>
+
+<!-- 純邏輯: 不碰 DOM, 不碰 localStorage. 開 index.html?selftest 會執行自我檢查 -->
+<script id="pure">
+const addSentence = (list, text) => {
+  const s = text.trim();
+  return s ? [...list, s] : list;
+};
+
+const removeAt = (list, at) => list.filter((_, i) => i !== at);
+
+const toggleSelection = (sel, i) =>
+  sel.includes(i) ? sel.filter(n => n !== i) : [...sel, i];
+
+// 刪除後選取要繼續指向原本那幾句: 被刪的丟掉, 排在它後面的往前搬一格
+const remapSelection = (sel, at) =>
+  sel.filter(i => i !== at).map(i => (i > at ? i - 1 : i));
+
+// 索引的意義依附於清單長度, 兩邊一旦不同步就會指到不存在的項目
+const parseSelection = (raw, len) => {
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v)
+      ? [...new Set(v)].filter(i => Number.isInteger(i) && i >= 0 && i < len)
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+// 有勾選就只播勾選的那幾句, 沒有勾選就播全部; 一律依清單順序, 與勾選先後無關
+const playQueue = (list, sel) =>
+  list.map((_, i) => i).filter(i => !sel.length || sel.includes(i));
+
+// cancel() 仍會對被中斷的那句觸發結束事件, 無條件往下唸就會停不下來.
+// 用播放序號判斷這個結束事件屬於哪一輪播放, null 代表這一輪不該再繼續.
+const nextInQueue = (queue, pos, eventToken, token) =>
+  eventToken !== token || pos + 1 >= queue.length ? null : pos + 1;
+
+// 全部程式碼在同一段 script, 未捕捉的解析錯誤會讓整頁不啟動, 所以損毀就退回空清單
+const parseList = raw => {
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter(s => typeof s === 'string') : [];
+  } catch {
+    return [];
+  }
+};
+
+function selfTest() {
+  const eq = (actual, expected, msg) => {
+    const [a, e] = [JSON.stringify(actual), JSON.stringify(expected)];
+    if (a !== e) throw new Error(`${msg}\n  expected ${e}\n  actual   ${a}`);
+  };
+
+  eq(addSentence([], '  hi  '), ['hi'], '新增: 去掉頭尾空白');
+  eq(addSentence(['a'], 'b'), ['a', 'b'], '新增: 附加到最後');
+  eq(addSentence(['a'], '   '), ['a'], '新增: 只有空白就不新增');
+  eq(addSentence(['a'], 'a'), ['a', 'a'], '新增: 重複的句子也是獨立一項');
+
+  eq(parseList('["a","b"]'), ['a', 'b'], '還原: 正常 JSON 陣列維持原順序');
+  eq(parseList(null), [], '還原: 沒有保存過就是空清單');
+  eq(parseList('{oops'), [], '還原: 損毀字串退回空清單');
+  eq(parseList('"a"'), [], '還原: 型別不對退回空清單');
+
+  eq(removeAt(['a', 'b', 'c'], 1), ['a', 'c'], '刪除: 只移除該項, 其餘順序不變');
+  eq(removeAt(['a', 'b', 'c'], 0), ['b', 'c'], '刪除: 第一項');
+  eq(removeAt(['a', 'b', 'c'], 2), ['a', 'b'], '刪除: 最後一項');
+
+  eq(nextInQueue([0, 1, 2], 0, 5, 5), 1, '續播: 序號沒變就往下一個');
+  eq(nextInQueue([0, 1, 2], 1, 5, 5), 2, '續播: 中間往下一個');
+  eq(nextInQueue([0, 1, 2], 2, 5, 5), null, '續播: 佇列走完就停');
+  eq(nextInQueue([0, 1, 2], 0, 5, 6), null, '續播: 中止後帶著舊序號的結束事件不得續播');
+
+  eq(remapSelection([0, 2], 1), [0, 1], '重映射: 大於被刪索引的往前搬一格');
+  eq(remapSelection([0, 2], 2), [0], '重映射: 被刪的那一個自己消失');
+  eq(remapSelection([1, 2], 0), [0, 1], '重映射: 全部往前搬');
+  eq(remapSelection([0, 1], 2), [0, 1], '重映射: 刪在後面不影響前面');
+
+  eq(toggleSelection([0], 2), [0, 2], '切換: 勾選');
+  eq(toggleSelection([0, 2], 0), [2], '切換: 取消勾選');
+
+  eq(parseSelection('[0,2]', 3), [0, 2], '還原選取: 範圍內的保留');
+  eq(parseSelection('[0,5]', 3), [0], '還原選取: 丟掉超出清單長度的');
+  eq(parseSelection('[0,0,1]', 3), [0, 1], '還原選取: 去掉重複');
+  eq(parseSelection('nope', 3), [], '還原選取: 損毀字串');
+  eq(parseSelection(null, 3), [], '還原選取: 沒有保存過');
+
+  eq(playQueue(['a', 'b', 'c'], []), [0, 1, 2], '佇列: 沒有勾選就是全部');
+  eq(playQueue(['a', 'b', 'c'], [1]), [1], '佇列: 有勾選就只有勾選的');
+  eq(playQueue(['a', 'b', 'c', 'd'], [1, 3]), [1, 3], '佇列: 可以是多句');
+  eq(playQueue(['a', 'b', 'c'], [2, 0]), [0, 2], '佇列: 依清單順序而非勾選順序');
+  eq(playQueue([], []), [], '佇列: 空清單');
+
+  return 'selftest ok';
+}
+</script>
 
 <script>
 const synth = speechSynthesis;
 const rateSel = document.getElementById('rate');
 const voiceSel = document.getElementById('voice');
+const listEl = document.getElementById('list');
+const form = document.getElementById('add');
+const input = document.getElementById('text');
+const clearBtn = document.getElementById('clear');
+const playAllBtn = document.getElementById('playAll');
+
+const KEY_LIST = 'sentences';
+const KEY_SEL = 'selected';
+
+let list = parseList(localStorage.getItem(KEY_LIST));
+let sel = parseSelection(localStorage.getItem(KEY_SEL), list.length);
+let token = 0;      // 每次中止或開始依序播放就 +1, 用來認出過期的結束事件
+let playing = false;
 
 // getVoices() 在部分瀏覽器第一次呼叫是空的, 要等 voiceschanged
 function loadVoices() {
@@ -62,13 +188,125 @@ voiceSel.onchange = () => localStorage.setItem('voice', voiceSel.value);
 loadVoices();
 synth.onvoiceschanged = loadVoices;
 
-document.getElementById('play').onclick = () => {
-  synth.cancel(); // 避免連點時排隊
-  const u = new SpeechSynthesisUtterance(document.getElementById('text').value);
+const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+
+function render() {
+  listEl.innerHTML = list.length
+    ? list.map((s, i) => `<li>
+        <input type="checkbox" data-toggle="${i}" aria-label="選取這一句"${sel.includes(i) ? ' checked' : ''}>
+        <span class="text">${esc(s)}</span>
+        <button data-play="${i}" title="播放這一句">▶</button>
+        <button data-del="${i}" title="刪除這一句">✕</button>
+      </li>`).join('')
+    : '<li class="empty">還沒有句子, 在上面輸入後按 Enter 新增</li>';
+  clearBtn.disabled = !list.length;
+  syncPlayAll();
+}
+
+// 勾選會活過重新整理, 所以播放範圍必須寫在按鈕上, 不能是隱形狀態
+function syncPlayAll() {
+  playAllBtn.disabled = !list.length;
+  playAllBtn.textContent = playing ? '■ 停止'
+    : sel.length ? `▶ 播放選取的 ${sel.length} 句`
+    : '▶ 播放全部';
+}
+
+function speak(text, onend) {
+  const u = new SpeechSynthesisUtterance(text);
   u.voice = synth.getVoices().find(v => v.name === voiceSel.value) || null;
   u.rate = +rateSel.value || 1;
+  if (onend) u.onend = onend;
   synth.speak(u);
+}
+
+// 中止: 換一個新序號讓還在路上的結束事件失效, 再取消目前的朗讀
+function stop() {
+  token++;
+  playing = false;
+  synth.cancel();
+}
+
+playAllBtn.onclick = () => {
+  if (playing) { stop(); render(); return; } // 播放中再按一次就是停止
+  const queue = playQueue(list, sel); // 按下的當下就固定, 播放中改勾選不影響這一輪
+  if (!queue.length) return;
+  stop();
+  const round = token;
+  playing = true;
+  const step = pos => speak(list[queue[pos]], () => {
+    const next = nextInQueue(queue, pos, round, token);
+    if (next === null) {
+      if (round === token) { playing = false; render(); } // 自然唸完
+      return;
+    }
+    step(next);
+  });
+  step(0);
+  render();
 };
+
+// 事件委派: render 每次重建整份清單, 逐項綁事件等於每次重繪都要重綁
+listEl.onclick = e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.dataset.play !== undefined) {
+    const at = +btn.dataset.play; // 先取索引, render 之後這個節點就沒了
+    stop();                       // 避免連點時排隊, 也中止正在進行的依序播放
+    render();
+    speak(list[at]);
+  }
+  if (btn.dataset.del !== undefined) del(+btn.dataset.del);
+};
+
+function del(at) {
+  // 取消就什麼都不做, 包含不中斷正在進行的朗讀
+  if (!confirm(`刪除這一句?\n\n${list[at]}`)) return;
+  stop(); // 清單一變動就停止播放, 免得唸到已經不存在的句子
+  list = removeAt(list, at);
+  sel = remapSelection(sel, at); // 少了這行, 勾選會悄悄移到別句上
+  commit();
+}
+
+clearBtn.onclick = () => {
+  if (!confirm(`清空全部 ${list.length} 句?`)) return;
+  stop();
+  list = [];
+  sel = [];
+  commit();
+};
+
+function save() {
+  localStorage.setItem(KEY_LIST, JSON.stringify(list));
+  localStorage.setItem(KEY_SEL, JSON.stringify(sel));
+}
+
+// 清單變動的唯一出口: 存檔 + 重繪
+function commit() {
+  save();
+  render();
+}
+
+// 勾選只存狀態不重繪: 重繪會重建 checkbox, 鍵盤操作的焦點會跟著不見
+listEl.onchange = e => {
+  if (e.target.dataset.toggle === undefined) return;
+  sel = toggleSelection(sel, +e.target.dataset.toggle);
+  save();
+  syncPlayAll();
+};
+
+form.onsubmit = e => {
+  e.preventDefault();
+  const next = addSentence(list, input.value);
+  form.reset();
+  input.focus();
+  if (next.length === list.length) return; // 只有空白, 不動清單
+  list = next;
+  commit();
+};
+
+render();
+
+if (location.search.includes('selftest')) console.log(selfTest());
 </script>
 </body>
 </html>
